@@ -441,6 +441,62 @@ function Toggle-EntryActive {
     return (-not $wasActive)
 }
 
+function Set-EntryDir {
+    # Rewrites the target dir of a parsed entry in place, preserving the call
+    # form, comments and indentation. Multi-line download_hf_file blocks get
+    # their destination line rebuilt as <newdir>/<filename>.
+    param([string]$Path, [int]$LineStart, [int]$LineEnd, [string]$NewDir)
+    if ([string]::IsNullOrWhiteSpace($NewDir) -or $NewDir -match '[\s#''"$]') {
+        throw 'Target dir must not be empty and may not contain spaces, #, quotes or $.'
+    }
+    $parsed = Get-ScriptModels $Path
+    $entry = $null
+    foreach ($m in $parsed.models) {
+        if ([int]$m['lineStart'] -eq $LineStart -and [int]$m['lineEnd'] -eq $LineEnd) { $entry = $m; break }
+    }
+    if (-not $entry) { throw "No model entry found at lines $LineStart-$LineEnd of $([System.IO.Path]::GetFileName($Path))." }
+    Backup-ScriptOnce ([System.IO.Path]::GetFileName($Path)) $Path
+    $text = Get-ScriptText $Path
+    $lines = Split-ScriptLines $text
+    $form = [string]$entry['callForm']
+
+    if ($form -eq 'download_hf_file' -and $LineEnd -gt $LineStart) {
+        # destination line is the last line of the block
+        $idx = $LineEnd - 1
+        $line = $lines[$idx]
+        $prefix = ''
+        if ($line -match '^(\s*#+\s?)') { $prefix = $Matches[1] }
+        $content = if ($prefix) { $line.Substring($prefix.Length) } else { $line }
+        $comment = ''
+        $cm = [regex]::Match($content, '\s+(#.*)$')
+        if ($cm.Success) { $comment = $cm.Groups[1].Value; $content = $content.Substring(0, $cm.Index).TrimEnd() }
+        $im = [regex]::Match($content, '^\s*')
+        $content = $im.Value + $NewDir + '/' + [string]$entry['filename']
+        if ($comment) { $content = $content + ' ' + $comment }
+        $lines[$idx] = $prefix + $content
+    }
+    else {
+        $idx = $LineStart - 1
+        $line = $lines[$idx]
+        $prefix = ''
+        if ($line -match '^(\s*#+\s?)') { $prefix = $Matches[1] }
+        $content = if ($prefix) { $line.Substring($prefix.Length) } else { $line }
+        $pattern = switch ($form) {
+            'primary'          { '^(download_civitai_primary\s+\d+\s+)([^\s#]+)' }
+            'download_hf'      { '^(download_hf\s+(?:hf://)?\S+\s+)([^\s#]+)' }
+            'download_hf_file' { '^(download_hf_file\s+\S+\s+\S+\s+)([^\s#]+)' }
+            'wget'             { '^(\s*wget\s+-P\s+)([^\s#]+)' }
+            'hf_download'      { '^(.*?--local-dir\s+)([^\s#]+)' }
+            default            { '^(.*?--out-dir\s+)([^\s#]+)' }
+        }
+        $m = [regex]::Match($content, $pattern)
+        if (-not $m.Success) { throw "Could not locate the target dir token on line $LineStart." }
+        $content = $content.Remove($m.Groups[2].Index, $m.Groups[2].Length).Insert($m.Groups[2].Index, $NewDir)
+        $lines[$idx] = $prefix + $content
+    }
+    [System.IO.File]::WriteAllText($Path, ($lines -join "`n"), $script:utf8NoBom)
+}
+
 function Invoke-GitStep {
     param([string[]]$GitArgs)
     # Relax ErrorActionPreference: with Stop, PS 5.1 turns the first stderr
@@ -776,6 +832,7 @@ $script:htmlTemplate = @'
 <div class="toolbar">
   <button class="btn" id="btnCheck">Check new versions</button>
   <button class="btn" id="btnAdd">Add model</button>
+  <button class="btn" id="btnSort"></button>
   <button class="btn" id="btnSave" style="margin-left:auto">Save to git</button>
 </div>
 <div class="warnings" id="warnings"></div>
@@ -882,12 +939,26 @@ function versionCell(m){
   }
 }
 
+let sortMode = 'dir';
+
+function sortedModels(){
+  const arr = models.slice();
+  if (sortMode === 'dir'){
+    arr.sort((a, b) => {
+      const da = (a.dir || '').toLowerCase(), db = (b.dir || '').toLowerCase();
+      if (da !== db) return da < db ? -1 : 1;
+      return a.lineStart - b.lineStart;
+    });
+  }
+  return arr;
+}
+
 function render(){
   const tbody = $('#tbody');
   if (!models.length){
     tbody.innerHTML = '<tr><td colspan="6"><div class="empty">No model download calls found in this script.</div></td></tr>';
   } else {
-    tbody.innerHTML = models.map(m => {
+    tbody.innerHTML = sortedModels().map(m => {
       const src = m.source === 'civitai' ? badge('b-civ','Civitai') : badge('b-hf','HF');
       const off = m.active ? '' : badge('b-off','off');
       let line1 = esc(entryTitle(m));
@@ -905,17 +976,59 @@ function render(){
       return '<tr' + (m.active ? '' : ' class="off"') + '>'
         + '<td>' + src + off + '</td>'
         + '<td><div>' + line1 + '</div>' + line2 + '</td>'
-        + '<td class="mono">' + esc(m.dir || '') + '</td>'
+        + '<td class="mono dir-cell" data-ls="' + m.lineStart + '" data-le="' + m.lineEnd + '" title="Click to edit target dir" style="cursor:pointer;text-decoration:underline dotted transparent;text-underline-offset:3px">' + esc(m.dir || '') + '</td>'
         + '<td>' + versionCell(m) + '</td>'
         + '<td>' + link + '</td>'
         + '<td style="white-space:nowrap">' + toggle + del + '</td>'
         + '</tr>';
     }).join('');
   }
+  fillDirDatalist();
   $('#warnings').innerHTML = warnings.map(w => '⚠ line ' + w.line + ': ' + esc(w.reason)).join('<br>');
   $('#hint').textContent = currentScript
     ? (models.length + ' model entr' + (models.length === 1 ? 'y' : 'ies') + (warnings.length ? ' · ' + warnings.length + ' parse warning' + (warnings.length === 1 ? '' : 's') : ''))
     : 'no script loaded';
+}
+
+function fillDirDatalist(){
+  const dirs = [...new Set(models.map(m => m.dir).filter(Boolean))];
+  $('#dirList').innerHTML = dirs.map(d => '<option value="' + esc(d) + '">').join('');
+}
+
+function startDirEdit(cell){
+  const ls = +cell.dataset.ls, le = +cell.dataset.le;
+  const m = models.find(x => x.lineStart === ls && x.lineEnd === le);
+  if (!m || cell.querySelector('input')) return;
+  const input = document.createElement('input');
+  input.className = 'dir-edit';
+  input.setAttribute('list', 'dirList');
+  input.value = m.dir || '';
+  input.style.width = '100%';
+  input.style.font = 'inherit';
+  input.style.padding = '2px 4px';
+  cell.textContent = '';
+  cell.appendChild(input);
+  input.focus();
+  input.select();
+  const commit = async () => {
+    const dir = input.value.trim();
+    restoreCell(cell, m);
+    if (!dir || dir === (m.dir || '')) return;
+    try {
+      const r = await api('/api/movedir', {method:'POST', body:{script: currentScript, lineStart: ls, lineEnd: le, dir: dir}});
+      models = r.models || [];
+      render();
+    } catch (e){ showErr(e); render(); }
+  };
+  input.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }
+    if (ev.key === 'Escape') { ev.preventDefault(); input.value = m.dir || ''; input.blur(); }
+  });
+  input.addEventListener('blur', commit);
+}
+
+function restoreCell(cell, m){
+  cell.textContent = m.dir || '';
 }
 
 async function loadModels(script){
@@ -945,6 +1058,16 @@ async function init(){
   $('#btnCheck').click();   // automatic version check at startup
 }
 
+function refreshSortBtn(){
+  $('#btnSort').textContent = sortMode === 'dir' ? 'Sort: target dir' : 'Sort: file order';
+}
+$('#btnSort').addEventListener('click', () => {
+  sortMode = (sortMode === 'dir') ? 'file' : 'dir';
+  refreshSortBtn();
+  render();
+});
+refreshSortBtn();
+
 function showErr(e){
   $('#hint').textContent = 'error: ' + e.message;
   $('#log').textContent += (($('#log').textContent ? '\n' : '') + e.message);
@@ -965,6 +1088,8 @@ $('#btnCheck').addEventListener('click', async () => {
 });
 
 $('#tbody').addEventListener('click', async ev => {
+  const dirCell = ev.target.closest('td.dir-cell');
+  if (dirCell){ startDirEdit(dirCell); return; }
   const btn = ev.target.closest('button.btn-xs');
   if (!btn) return;
   const ls = +btn.dataset.ls, le = +btn.dataset.le;
@@ -998,11 +1123,6 @@ $('#btnSave').addEventListener('click', async () => {
   } catch (e){ showErr(e); }
   btn.disabled = false; btn.textContent = old;
 });
-
-function fillDirDatalist(){
-  const dirs = [...new Set(models.map(m => m.dir).filter(Boolean))];
-  $('#dirList').innerHTML = dirs.map(d => '<option value="' + esc(d) + '">').join('');
-}
 
 function openAdd(){
   resolveResult = null; chosenFile = null;
@@ -1248,6 +1368,18 @@ while ($listener.IsListening) {
                 Merge-CivitaiCache -ScriptName $name -Models $r.models
                 Add-Log ("Toggled entry at lines {0}-{1} in {2} to {3}" -f $ls, $le, $name, $(if ($newActive) { 'active' } else { 'inactive' }))
                 Send-Json $ctx @{ ok = $true; active = $newActive; models = $r.models }
+            }
+            '/api/movedir' {
+                $name = [string]$body['script']
+                $p = Resolve-ScriptPath $name
+                $ls = [int]$body['lineStart']
+                $le = [int]$body['lineEnd']
+                $dir = [string]$body['dir']
+                Set-EntryDir -Path $p -LineStart $ls -LineEnd $le -NewDir $dir
+                $r = Get-ScriptModels $p
+                Merge-CivitaiCache -ScriptName $name -Models $r.models
+                Add-Log "Changed target dir of lines $ls-$le in $name to '$dir'"
+                Send-Json $ctx @{ ok = $true; models = $r.models }
             }
             '/api/save' {
                 $name = [string]$body['script']
