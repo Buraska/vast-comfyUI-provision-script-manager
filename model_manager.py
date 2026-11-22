@@ -56,15 +56,15 @@ LOG_TAIL_LINES = 150
 # ---------------------------------------------------------------------------
 # Parser - regex table (one pattern per call form)
 # ---------------------------------------------------------------------------
-RE_CIV_PRIMARY = re.compile(r'^download_civitai_primary\s+(\d+)\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
-RE_CIV_FLAG = re.compile(r'^civitai\s+download\s+--version\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
-RE_CIV_MODEL = re.compile(r'^civitai\s+download\s+--model\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
-RE_CIV_BARE = re.compile(r'^civitai\s+download\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
-RE_HF_DOWNLOAD_A = re.compile(r'^hf\s+download\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+--local-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
-RE_HF_DOWNLOAD_B = re.compile(r'^hf\s+download\s+([\w.-]+/[\w.-]+)\s+([^/\s"\'$]+)\s+--local-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
-RE_DOWNLOAD_HF = re.compile(r'^download_hf\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
-RE_WGET = re.compile(r'^wget\s+-P\s+([^\s#]+)\s+(https://huggingface\.co/[^\s#]+)(?:\s+#\s*(.+?))?\s*$')
-RE_HF_FILE_ARGS = re.compile(r'^download_hf_file\s+([^\s"\'$]+)\s+([^\s"\'$]+)\s+([^\s"\'$]+)(?:\s+#\s*(.+?))?\s*$')
+RE_CIV_PRIMARY = re.compile(r'^download_civitai_primary\s+(\d+)\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_CIV_FLAG = re.compile(r'^civitai\s+download\s+--version\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_CIV_MODEL = re.compile(r'^civitai\s+download\s+--model\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_CIV_BARE = re.compile(r'^civitai\s+download\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_HF_DOWNLOAD_A = re.compile(r'^hf\s+download\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+--local-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_HF_DOWNLOAD_B = re.compile(r'^hf\s+download\s+([\w.-]+/[\w.-]+)\s+([^/\s"\'$]+)\s+--local-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_DOWNLOAD_HF = re.compile(r'^download_hf\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_WGET = re.compile(r'^wget\s+-P\s+([^\s#]+)\s+(https://huggingface\.co/[^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_HF_FILE_ARGS = re.compile(r'^download_hf_file\s+([^\s"\'$]+)\s+([^\s"\'$]+)\s+([^\s"\'$]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
 RE_HF_FILE_TRIGGER = re.compile(r'^download_hf_file[\s\\]')
 
 # Standalone-comment guards: reject lines that belong to a commented-out
@@ -88,7 +88,8 @@ RE_HF_URL_HTTPS = re.compile(r'^https?://(?:www\.)?huggingface\.co/([\w.-]+)/([\
 RE_HF_URL_SCHEME = re.compile(r'^hf://([\w.-]+)/([\w.-]+)(?:/(.+))?$')
 RE_HF_URL_INNER = re.compile(r'^https://huggingface\.co/([^/\s]+)/([^/\s]+)/resolve/([^/\s]+)/(.+)$')
 
-RE_COMMENT_PREFIX = re.compile(r'^(\s*#+\s?)')
+RE_COMMENT_PREFIX = re.compile(r'^(\s*#+\s?)')      # full '# ' prefix, for capture
+RE_COMMENT_STRIP = re.compile(r'^(\s*)#+\s?')       # leading whitespace only, for uncomment
 
 
 def split_script_lines(text):
@@ -456,6 +457,17 @@ def remove_entry_lines(path, line_start, line_end):
     write_script_text(path, kept)
 
 
+def safe_echo_text(text):
+    """Text destined for a single-quoted bash echo inside an inserted line:
+    characters that would break the quoting or the parser's wrapper suffix are
+    replaced with spaces."""
+    if not text or not text.strip():
+        return ''
+    cleaned = ''.join(' ' if c in '#|\'"\\`' else c for c in text)
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    return cleaned.strip()
+
+
 def toggle_entry_active(path, line_start, line_end):
     """Comment out / uncomment the exact block of a parsed model entry; every
     line of a multi-line block is toggled. Returns the resulting active state."""
@@ -475,8 +487,13 @@ def toggle_entry_active(path, line_start, line_end):
                 lines[idx] = '# ' + line
         else:
             if line.lstrip().startswith('#'):
-                lines[idx] = re.sub(RE_COMMENT_PREFIX, r'\1', line)
+                lines[idx] = re.sub(RE_COMMENT_STRIP, r'\1', line)
     write_script_text(path, lines)
+    models, _ = parse_script(path)
+    after = next((m for m in models
+                  if m['lineStart'] == line_start and m['lineEnd'] == line_end), None)
+    if after:
+        return bool(after['active'])
     return not was_active
 
 
@@ -504,13 +521,21 @@ def set_entry_dir(path, line_start, line_end, new_dir):
         prefix_m = RE_COMMENT_PREFIX.match(line)
         prefix = prefix_m.group(1) if prefix_m else ''
         content = line[len(prefix):]
+        # keep the tolerance wrapper and trailing comment across the rewrite
         comment = ''
         cm = re.search(r'\s+(#.*)$', content)
         if cm:
             comment = cm.group(1)
             content = content[:cm.start()].rstrip()
+        wrapper = ''
+        wm = re.search(r'\s*\|\|.*$', content)
+        if wm:
+            wrapper = wm.group(0)
+            content = content[:wm.start()].rstrip()
         indent = re.match(r'^\s*', content).group(0)
         content = indent + new_dir + '/' + str(entry['filename'])
+        if wrapper:
+            content += wrapper
         if comment:
             content += ' ' + comment
         lines[idx] = prefix + content
@@ -1466,13 +1491,17 @@ class Handler(BaseHTTPRequestHandler):
             if resolved['kind'] == 'civitai':
                 form = dominant_civitai_form(path_full)
                 vid = str(resolved['versionId'])
+                # Every inserted call is wrapped so a failed download never
+                # aborts the whole provision run under `set -e`.
+                safe_desc = safe_echo_text(desc) or 'version {0}'.format(vid)
                 suffix = ' # {0}'.format(desc) if desc else ''
+                tolerant = " || echo '[provision] download failed: {0}, continuing' >&2".format(safe_desc)
                 if form == 'flag':
-                    line = 'civitai download --version {0} --out-dir {1}{2}'.format(vid, directory, suffix)
+                    line = 'civitai download --version {0} --out-dir {1}{2}{3}'.format(vid, directory, tolerant, suffix)
                 elif form == 'bare':
-                    line = 'civitai download {0} --out-dir {1}{2}'.format(vid, directory, suffix)
+                    line = 'civitai download {0} --out-dir {1}{2}{3}'.format(vid, directory, tolerant, suffix)
                 else:
-                    line = 'download_civitai_primary {0} {1}{2}'.format(vid, directory, suffix)
+                    line = 'download_civitai_primary {0} {1}{2}{3}'.format(vid, directory, tolerant, suffix)
                 new_lines = [line]
                 entry = {'source': 'civitai', 'kind': 'civitai-version',
                          'ids': {'versionId': vid}, 'dir': directory,
@@ -1486,10 +1515,16 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('No file path resolved for the HuggingFace URL.')
                 file_name = str(resolved['fileName']) or os.path.basename(hf_path)
                 dest = directory.rstrip('/') + '/' + file_name
-                new_lines = ['download_hf_file \\',
-                             '  {0} \\'.format(repo),
-                             '  {0} \\'.format(hf_path),
-                             '  {0}'.format(dest)]
+                safe_name = safe_echo_text(file_name) or 'huggingface file'
+                # Standalone comment above the block survives re-parse as the
+                # entry description; the last line carries the tolerance wrapper.
+                new_lines = []
+                if desc:
+                    new_lines.append('# {0}'.format(desc))
+                new_lines += ['download_hf_file \\',
+                              '  {0} \\'.format(repo),
+                              '  {0} \\'.format(hf_path),
+                              "  {0} || echo '[provision] download failed: {1}, continuing' >&2".format(dest, safe_name)]
                 entry = {'source': 'hf', 'kind': 'hf-file', 'ids': {},
                          'dir': directory, 'description': desc,
                          'url': 'https://huggingface.co/' + repo,

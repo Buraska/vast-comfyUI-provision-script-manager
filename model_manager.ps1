@@ -226,7 +226,7 @@ function Get-ScriptModels {
                 $joined = ($parts -join ' ')
             }
 
-            $mHf = [regex]::Match($joined, '^download_hf_file\s+([^\s"''$]+)\s+([^\s"''$]+)\s+([^\s"''$]+)(?:\s+#\s*(.+?))?\s*$')
+            $mHf = [regex]::Match($joined, '^download_hf_file\s+([^\s"''$]+)\s+([^\s"''$]+)\s+([^\s"''$]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
             if ($mHf.Success) {
                 $repo = $mHf.Groups[1].Value
                 $remotePath = $mHf.Groups[2].Value
@@ -268,7 +268,7 @@ function Get-ScriptModels {
 
         # --- Civitai forms ---
         $entry = $null
-        $m = [regex]::Match($work, '^download_civitai_primary\s+(\d+)\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
+        $m = [regex]::Match($work, '^download_civitai_primary\s+(\d+)\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
         if ($m.Success) {
             $entry = [ordered]@{
                 lineStart = $lineNo; lineEnd = $blockEnd; active = $active
@@ -279,7 +279,7 @@ function Get-ScriptModels {
             }
         }
         if (-not $entry) {
-            $m = [regex]::Match($work, '^civitai\s+download\s+--version\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
+            $m = [regex]::Match($work, '^civitai\s+download\s+--version\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
             if ($m.Success) {
                 $entry = [ordered]@{
                     lineStart = $lineNo; lineEnd = $blockEnd; active = $active
@@ -291,7 +291,7 @@ function Get-ScriptModels {
             }
         }
         if (-not $entry) {
-            $m = [regex]::Match($work, '^civitai\s+download\s+--model\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
+            $m = [regex]::Match($work, '^civitai\s+download\s+--model\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
             if ($m.Success) {
                 $entry = [ordered]@{
                     lineStart = $lineNo; lineEnd = $blockEnd; active = $active
@@ -303,7 +303,7 @@ function Get-ScriptModels {
             }
         }
         if (-not $entry) {
-            $m = [regex]::Match($work, '^civitai\s+download\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
+            $m = [regex]::Match($work, '^civitai\s+download\s+(\d+)\s+--out-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
             if ($m.Success) {
                 $entry = [ordered]@{
                     lineStart = $lineNo; lineEnd = $blockEnd; active = $active
@@ -317,7 +317,7 @@ function Get-ScriptModels {
 
         # --- hf download: hf://repo/path --local-dir DIR  |  repo FILE --local-dir DIR ---
         if (-not $entry) {
-            $m = [regex]::Match($work, '^hf\s+download\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+--local-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
+            $m = [regex]::Match($work, '^hf\s+download\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+--local-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
             if ($m.Success) {
                 $repo = $m.Groups[1].Value
                 $remotePath = $m.Groups[2].Value
@@ -337,7 +337,7 @@ function Get-ScriptModels {
             }
         }
         if (-not $entry) {
-            $m = [regex]::Match($work, '^hf\s+download\s+([\w.-]+/[\w.-]+)\s+([^/\s"''$]+)\s+--local-dir\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
+            $m = [regex]::Match($work, '^hf\s+download\s+([\w.-]+/[\w.-]+)\s+([^/\s"''$]+)\s+--local-dir\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
             if ($m.Success) {
                 $entry = [ordered]@{
                     lineStart = $lineNo; lineEnd = $blockEnd; active = $active
@@ -351,7 +351,7 @@ function Get-ScriptModels {
 
         # --- download_hf helper (uri + local dir) ---
         if (-not $entry) {
-            $m = [regex]::Match($work, '^download_hf\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+([^\s#]+)(?:\s+#\s*(.+?))?\s*$')
+            $m = [regex]::Match($work, '^download_hf\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
             if ($m.Success) {
                 $repo = $m.Groups[1].Value
                 $remotePath = $m.Groups[2].Value
@@ -372,7 +372,7 @@ function Get-ScriptModels {
 
         # --- wget of a huggingface.co resolve URL ---
         if (-not $entry) {
-            $m = [regex]::Match($work, '^wget\s+-P\s+([^\s#]+)\s+(https://huggingface\.co/[^\s#]+)(?:\s+#\s*(.+?))?\s*$')
+            $m = [regex]::Match($work, '^wget\s+-P\s+([^\s#]+)\s+(https://huggingface\.co/[^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
             if ($m.Success) {
                 $u = $m.Groups[2].Value
                 $mu = [regex]::Match($u, '^https://huggingface\.co/([^/\s]+)/([^/\s]+)/resolve/([^/\s]+)/(.+)$')
@@ -457,6 +457,26 @@ function Remove-EntryLines {
     [System.IO.File]::WriteAllText($Path, ($kept -join "`n"), $script:utf8NoBom)
 }
 
+function Get-SafeEchoText {
+    # Text destined for a single-quoted bash echo inside an inserted line:
+    # characters that would break the quoting or the parser's wrapper suffix
+    # are replaced with spaces.
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $Text.ToCharArray()) {
+        if ($ch -eq '#' -or $ch -eq '|' -or $ch -eq "'" -or $ch -eq '"' -or $ch -eq '\' -or $ch -eq '`') {
+            [void]$sb.Append(' ')
+        }
+        else {
+            [void]$sb.Append($ch)
+        }
+    }
+    $out = $sb.ToString()
+    while ($out.Contains('  ')) { $out = $out.Replace('  ', ' ') }
+    return $out.Trim()
+}
+
 function Toggle-EntryActive {
     # Comment out or uncomment the exact line block of a parsed model entry.
     # Multi-line blocks are toggled on every line so bash never sees a bare
@@ -486,6 +506,12 @@ function Toggle-EntryActive {
         }
     }
     [System.IO.File]::WriteAllText($Path, ($lines -join "`n"), $script:utf8NoBom)
+    $check = Get-ScriptModels $Path
+    foreach ($m in $check.models) {
+        if ([int]$m['lineStart'] -eq $LineStart -and [int]$m['lineEnd'] -eq $LineEnd) {
+            return [bool]$m['active']
+        }
+    }
     return (-not $wasActive)
 }
 
@@ -515,11 +541,16 @@ function Set-EntryDir {
         $prefix = ''
         if ($line -match '^(\s*#+\s?)') { $prefix = $Matches[1] }
         $content = if ($prefix) { $line.Substring($prefix.Length) } else { $line }
+        # keep the tolerance wrapper and trailing comment across the rewrite
         $comment = ''
         $cm = [regex]::Match($content, '\s+(#.*)$')
         if ($cm.Success) { $comment = $cm.Groups[1].Value; $content = $content.Substring(0, $cm.Index).TrimEnd() }
+        $wrapper = ''
+        $wm = [regex]::Match($content, '\s*\|\|.*$')
+        if ($wm.Success) { $wrapper = $wm.Value; $content = $content.Substring(0, $wm.Index).TrimEnd() }
         $im = [regex]::Match($content, '^\s*')
         $content = $im.Value + $NewDir + '/' + [string]$entry['filename']
+        if ($wrapper) { $content = $content + $wrapper }
         if ($comment) { $content = $content + ' ' + $comment }
         $lines[$idx] = $prefix + $content
     }
@@ -1598,12 +1629,17 @@ while ($listener.IsListening) {
                 if ($resolved.kind -eq 'civitai') {
                     $form = Get-DominantCivitaiForm $p
                     $vid = [string]$resolved.versionId
+                    # Every inserted call is wrapped so a failed download never
+                    # aborts the whole provision run under `set -e`.
+                    $safeDesc = Get-SafeEchoText $desc
+                    if ([string]::IsNullOrWhiteSpace($safeDesc)) { $safeDesc = "version $vid" }
                     $suffix = ''
                     if ($desc) { $suffix = " # $desc" }
+                    $tolerant = " || echo '[provision] download failed: $safeDesc, continuing' >&2"
                     switch ($form) {
-                        'flag' { $line = "civitai download --version $vid --out-dir $dir$suffix" }
-                        'bare' { $line = "civitai download $vid --out-dir $dir$suffix" }
-                        default { $line = "download_civitai_primary $vid $dir$suffix" }
+                        'flag' { $line = "civitai download --version $vid --out-dir $dir$tolerant$suffix" }
+                        'bare' { $line = "civitai download $vid --out-dir $dir$tolerant$suffix" }
+                        default { $line = "download_civitai_primary $vid $dir$tolerant$suffix" }
                     }
                     $newLines = @($line)
                     $entry = [ordered]@{
@@ -1619,11 +1655,17 @@ while ($listener.IsListening) {
                     $fileName = [string]$resolved.fileName
                     if ([string]::IsNullOrWhiteSpace($fileName)) { $fileName = [System.IO.Path]::GetFileName($hpath) }
                     $dest = $dir.TrimEnd('/') + '/' + $fileName
-                    $newLines = @(
+                    $safeName = Get-SafeEchoText $fileName
+                    if ([string]::IsNullOrWhiteSpace($safeName)) { $safeName = 'huggingface file' }
+                    # Standalone comment above the block survives re-parse as the
+                    # entry description; the last line carries the tolerance wrapper.
+                    $newLines = @()
+                    if ($desc) { $newLines += "# $desc" }
+                    $newLines += @(
                         'download_hf_file \',
                         "  $repo \",
                         "  $hpath \",
-                        "  $dest"
+                        "  $dest || echo '[provision] download failed: $safeName, continuing' >&2"
                     )
                     $entry = [ordered]@{
                         source = 'hf'; kind = 'hf-file'

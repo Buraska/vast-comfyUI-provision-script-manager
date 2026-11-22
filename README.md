@@ -109,6 +109,15 @@ wget -P <dir> https://huggingface.co/<owner>/<repo>/resolve/<branch>/<path>
   parse warnings in the UI instead of being silently dropped.
 - **Target dir** is editable per entry; values may not contain spaces, `#`, quotes or `$`
   (anything else would break the bash line).
+- **Download errors never kill the run.** Lines inserted by the tool carry a tolerance
+  wrapper, so a failed download cannot abort the whole provision under `set -e`:
+
+  ```bash
+  civitai download --version 501240 --out-dir ./models/loras || echo '[provision] download failed: My Lora v2, continuing' >&2 # My Lora v2
+  ```
+
+  The parser understands this suffix on every supported form (hand-written unwrapped lines
+  work as before, and toggling or retargeting a wrapped entry preserves the wrapper).
 - **Custom helpers with other names** are not recognized. If your script wraps downloads in
   its own function, either name it like one of the helpers above or keep those lines in a
   form from the list; unrecognized lines are simply left untouched and untracked.
