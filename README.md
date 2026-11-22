@@ -4,6 +4,15 @@ A local web UI that turns your bash **provision scripts** from a wall of shell l
 clickable table of models — with Civitai version checks, one-click add/delete, and git-based
 sync to your Vast.ai server over SSH.
 
+Two interchangeable implementations of the same tool:
+
+- **`model_manager.py`** — Python 3.8+, standard library only (no pip packages), runs on
+  Windows, Linux and macOS. Recommended.
+- `model_manager.ps1` — the original single-file PowerShell 5.1 version for Windows.
+
+Both speak the identical REST API and serve the identical web UI, and both read the same
+`model_manager_settings.json`.
+
 ![Model Manager UI](docs/screenshot.png)
 
 ## The problem
@@ -60,22 +69,37 @@ instance pulls or runs it over SSH at start.
 ## Usage
 
 ```powershell
-# put model_manager.ps1 into the folder with your *.sh provision scripts
+# put model_manager.py into the folder with your *.sh provision scripts
 cd C:\path\to\your\provision-scripts
-powershell -ExecutionPolicy Bypass -File .\model_manager.ps1
+python model_manager.py            # or: py model_manager.py
 ```
 
 The UI opens at `http://localhost:8766` (the port auto-increments if taken). Useful flags:
 
 ```powershell
--Port 8800          # fixed port
--NoBrowser          # do not auto-open the browser
--ScriptsDir <path>  # manage scripts in another folder
+--port 8800            # fixed port
+--no-browser           # do not auto-open the browser
+--scripts-dir <path>   # manage scripts in another folder
 ```
+
+The PowerShell version takes the equivalent parameters (`-Port`, `-NoBrowser`, `-ScriptsDir`).
+
+### Scripts folder config
+
+By default the tool manages the `*.sh` files next to itself. To run it from anywhere else,
+set the folder once — either in the UI (**Folder** button) or by creating
+`model_manager_settings.json` next to the tool:
+
+```json
+{ "scriptsDir": "C:\\path\\to\\your\\provision-scripts" }
+```
+
+Precedence: `--scripts-dir` parameter > `model_manager_settings.json` > folder of the tool itself.
 
 ### Requirements
 
-- Windows PowerShell 5.1 or 7
+- `model_manager.py`: Python 3.8+ — standard library only, nothing to install
+- `model_manager.ps1`: Windows PowerShell 5.1 or 7
 - git (for the **Save to git** button)
 - optional: `CIVITAI_TOKEN` environment variable — sent as a Bearer token to reduce
   Civitai API rate limiting during version checks
