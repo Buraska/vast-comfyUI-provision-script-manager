@@ -57,15 +57,63 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 
 $script:utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
-if ([string]::IsNullOrWhiteSpace($ScriptsDir)) {
+# Settings: model_manager_settings.json next to THIS script. It stores the
+# configured scripts folder so the tool can run from anywhere (e.g. its own
+# repo folder) and still manage the real provisioning scripts.
+$script:settingsPath = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'model_manager_settings.json' } else { 'model_manager_settings.json' }
+
+function Get-SavedScriptsDir {
+    if (-not ([System.IO.File]::Exists($script:settingsPath))) { return '' }
+    try {
+        $raw = Get-Content -Raw -LiteralPath $script:settingsPath | ConvertFrom-Json
+        return [string]$raw.scriptsDir
+    }
+    catch {
+        Write-Warning "Could not read $script:settingsPath : $($_.Exception.Message)"
+        return ''
+    }
+}
+
+function Save-ScriptsDir {
+    param([string]$Dir)
+    $obj = [ordered]@{ scriptsDir = [string]$Dir }
+    [System.IO.File]::WriteAllText($script:settingsPath, ($obj | ConvertTo-Json), $script:utf8NoBom)
+}
+
+# Precedence: -ScriptsDir parameter > config file > folder of this script.
+$script:scriptsDirSource = 'default'
+if (-not [string]::IsNullOrWhiteSpace($ScriptsDir)) {
+    $script:scriptsDirSource = 'parameter'
+}
+else {
     $ScriptsDir = $PSScriptRoot
+    $saved = Get-SavedScriptsDir
+    if (-not [string]::IsNullOrWhiteSpace($saved)) {
+        if ([System.IO.Directory]::Exists($saved)) {
+            $ScriptsDir = $saved
+            $script:scriptsDirSource = 'config'
+        }
+        else {
+            Write-Warning "model_manager_settings.json points to a missing folder: $saved"
+        }
+    }
 }
 if ([string]::IsNullOrWhiteSpace($ScriptsDir)) {
     throw 'ScriptsDir could not be determined; pass -ScriptsDir explicitly.'
 }
 $script:ScriptsDir = [System.IO.Path]::GetFullPath($ScriptsDir)
 if (-not ([System.IO.Directory]::Exists($script:ScriptsDir))) {
-    throw "Scripts directory not found: $script:ScriptsDir"
+    if ($script:scriptsDirSource -eq 'parameter') {
+        throw "Scripts directory not found: $script:ScriptsDir"
+    }
+    if ($PSScriptRoot -and [System.IO.Directory]::Exists($PSScriptRoot)) {
+        Write-Warning "Scripts directory not found: $script:ScriptsDir - falling back to $PSScriptRoot"
+        $script:ScriptsDir = $PSScriptRoot
+        $script:scriptsDirSource = 'fallback'
+    }
+    else {
+        throw "Scripts directory not found: $script:ScriptsDir"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -777,7 +825,7 @@ $script:htmlTemplate = @'
   header{display:flex;align-items:center;gap:14px;padding:12px 18px;background:var(--surface);border-bottom:1px solid var(--border)}
   header h1{font-size:17px;margin:0;font-weight:600}
   header .hint{color:var(--muted);font-size:12.5px}
-  header select{margin-left:auto;font:inherit;padding:5px 8px}
+  header select{font:inherit;padding:5px 8px}
   .toolbar{display:flex;gap:10px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--border);background:var(--surface)}
   .btn{font:inherit;padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface);cursor:pointer}
   .btn:hover{border-color:#c9ccd1;background:#f2f4f7}
@@ -813,6 +861,7 @@ $script:htmlTemplate = @'
   .modal.hidden{display:none}
   .modal-card{background:var(--surface);border-radius:10px;padding:18px 20px;width:520px;max-width:94vw;max-height:90vh;overflow:auto;box-shadow:0 12px 40px rgba(0,0,0,.18)}
   .modal-card h3{margin:0 0 12px;font-size:15px}
+  .hint-text{color:var(--muted);font-size:12px;word-break:break-all;margin:0 0 6px}
   .modal-card label{display:block;margin:10px 0 4px;font-size:12.5px;color:var(--muted)}
   .modal-card input,.modal-card select{width:100%;font:inherit;padding:6px 8px;border:1px solid var(--border);border-radius:6px}
   .preview{margin:12px 0;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:13px}
@@ -827,6 +876,7 @@ $script:htmlTemplate = @'
 <header>
   <h1>Model Manager</h1>
   <span class="hint" id="hint">loading…</span>
+  <button class="btn" id="btnFolder" style="margin-left:auto">Folder</button>
   <select id="scriptSel"></select>
 </header>
 <div class="toolbar">
@@ -866,6 +916,20 @@ $script:htmlTemplate = @'
   </div>
 </div>
 
+<div class="modal hidden" id="dirModal">
+  <div class="modal-card">
+    <h3>Scripts folder</h3>
+    <p class="hint-text" id="curDir"></p>
+    <label>Folder containing your *.sh provision scripts</label>
+    <input id="newDir" placeholder="E:\path\to\your\provision-scripts">
+    <div class="modal-actions">
+      <button class="btn" id="btnDirCancel">Cancel</button>
+      <button class="btn primary" id="btnDirSave">Save</button>
+    </div>
+    <p class="err" id="dirError"></p>
+  </div>
+</div>
+
 <script>
 'use strict';
 const TOKEN = '__TOKEN__';
@@ -875,6 +939,7 @@ let warnings = [];
 let currentScript = null;
 let resolveResult = null;
 let chosenFile = null;
+let scriptsDir = '';
 
 function esc(s){
   let t = String(s == null ? '' : s);
@@ -1043,14 +1108,20 @@ async function init(){
   let S;
   try { S = await api('/api/state'); }
   catch (e){
-    document.querySelector('main').innerHTML = '<div class="empty">Server unavailable: ' + esc(e.message) + '</div>';
+    // keep the page skeleton intact so the Folder button can recover the UI
+    // without a reload
+    $('#hint').textContent = 'server unavailable: ' + e.message;
     return;
   }
   const sel = $('#scriptSel');
   sel.innerHTML = (S.scripts || []).map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+  scriptsDir = S.scriptsDir || '';
+  $('#btnFolder').title = scriptsDir || 'Set the scripts folder';
   $('#log').textContent = S.logText || '';
   if (!(S.scripts || []).length){
-    $('#hint').textContent = 'no *.sh scripts found in ' + 'the scripts folder';
+    $('#hint').textContent = S.dirError
+      ? 'scripts folder problem: ' + S.dirError
+      : 'no *.sh scripts found in ' + 'the scripts folder';
     return;
   }
   sel.addEventListener('change', () => loadModels(sel.value).catch(showErr));
@@ -1067,6 +1138,37 @@ $('#btnSort').addEventListener('click', () => {
   render();
 });
 refreshSortBtn();
+
+$('#btnFolder').addEventListener('click', () => {
+  $('#curDir').textContent = scriptsDir ? 'Current: ' + scriptsDir : 'No folder configured.';
+  $('#newDir').value = scriptsDir;
+  $('#dirError').textContent = '';
+  $('#dirModal').classList.remove('hidden');
+  $('#newDir').focus();
+});
+$('#btnDirCancel').addEventListener('click', () => $('#dirModal').classList.add('hidden'));
+
+$('#btnDirSave').addEventListener('click', async () => {
+  const dir = $('#newDir').value.trim();
+  $('#dirError').textContent = '';
+  if (!dir){ $('#dirError').textContent = 'Enter a folder path.'; return; }
+  try {
+    const r = await api('/api/set-dir', {method:'POST', body:{dir: dir}});
+    scriptsDir = r.scriptsDir || dir;
+    $('#btnFolder').title = scriptsDir;
+    $('#dirModal').classList.add('hidden');
+    const sel = $('#scriptSel');
+    sel.innerHTML = (r.scripts || []).map(n => '<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+    if (r.logText) $('#log').textContent = r.logText;
+    if ((r.scripts || []).length){
+      currentScript = null;
+      await loadModels(sel.value).catch(showErr);
+    } else {
+      models = []; warnings = []; render();
+      $('#hint').textContent = 'no *.sh scripts in ' + scriptsDir;
+    }
+  } catch (e){ $('#dirError').textContent = e.message; }
+});
 
 function showErr(e){
   $('#hint').textContent = 'error: ' + e.message;
@@ -1216,7 +1318,7 @@ init();
 # ---------------------------------------------------------------------------
 try { $host.UI.RawUI.WindowTitle = 'Model manager' } catch {}
 
-Add-Log "Model manager UI: scripts in $script:ScriptsDir"
+Add-Log "Model manager UI: scripts in $script:ScriptsDir (source: $script:scriptsDirSource)"
 
 $script:token = [guid]::NewGuid().ToString('N')
 
@@ -1319,13 +1421,43 @@ while ($listener.IsListening) {
 
         switch ($path) {
             '/api/state' {
-                $scripts = @(Get-ChildItem -LiteralPath $script:ScriptsDir -Filter '*.sh' -File |
-                    Sort-Object Name | ForEach-Object { $_.Name })
-                Send-Json $ctx @{
-                    scripts = $scripts
-                    current = $null
-                    logText = (Get-LogTailText)
+                $scripts = @()
+                $dirError = ''
+                try {
+                    $scripts = @(Get-ChildItem -LiteralPath $script:ScriptsDir -Filter '*.sh' -File |
+                        Sort-Object Name | ForEach-Object { $_.Name })
                 }
+                catch {
+                    $dirError = $_.Exception.Message
+                    Add-Log "Cannot list scripts in $($script:ScriptsDir): $($_.Exception.Message)"
+                }
+                Send-Json $ctx @{
+                    scripts    = $scripts
+                    current    = $null
+                    scriptsDir = $script:ScriptsDir
+                    dirError   = $dirError
+                    logText    = (Get-LogTailText)
+                }
+            }
+            '/api/set-dir' {
+                $dir = ([string]$body['dir']).Trim()
+                if ([string]::IsNullOrWhiteSpace($dir)) { throw 'A folder path is required.' }
+                $full = [System.IO.Path]::GetFullPath($dir)
+                if (-not ([System.IO.Directory]::Exists($full))) { throw "Folder not found: $full" }
+                $scripts = @()
+                try {
+                    $scripts = @(Get-ChildItem -LiteralPath $full -Filter '*.sh' -File |
+                        Sort-Object Name | ForEach-Object { $_.Name })
+                }
+                catch {
+                    throw "Cannot list scripts in ${full}: $($_.Exception.Message)"
+                }
+                Save-ScriptsDir $full
+                $script:ScriptsDir = $full
+                $script:civitaiCache = @{}
+                $script:backedUp = @{}
+                Add-Log "Scripts folder set to $full ($($scripts.Count) script$(if ($scripts.Count -ne 1) { 's' }) found)"
+                Send-Json $ctx @{ ok = $true; scripts = $scripts; scriptsDir = $full; logText = (Get-LogTailText) }
             }
             '/api/models' {
                 $name = [string]$req.QueryString['script']
