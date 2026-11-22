@@ -56,6 +56,78 @@ your `*.sh` provision scripts, run it, and it opens a local web UI that:
   (bash-safe), with a one-shot `*.sh.bak` backup per session,
 - **Save to git** — one button that commits the current script and pushes it to GitHub.
 
+## Supported script format (importing your own provision script)
+
+The parser reads every top-level `*.sh` file line by line. A line becomes a model entry if,
+after stripping any leading `#` markers (so commented-out lines are imported as inactive
+rows), it matches one of these forms. `<...>` are placeholders; `[...]` is optional.
+
+### Civitai
+
+```
+download_civitai_primary <versionId> <dir> [# description]
+civitai download --version <versionId> --out-dir <dir> [# description]
+civitai download <versionId> --out-dir <dir> [# description]
+civitai download --model <modelId> --out-dir <dir> [# description]
+```
+
+`download_civitai_primary` is the checksum-verified helper used by the bundled scripts; the
+other three are the native `civitai` CLI forms. When you add a model through the UI, the
+tool writes it in the dominant form already used by that script. `--model` entries serve
+whatever the model's newest version is at runtime, so the version check only shows the
+latest version name and never flags them as outdated.
+
+### HuggingFace
+
+```
+download_hf_file \            # helper, single line or backslash-continued block
+  <owner>/<repo> \
+  <path/in/repo> \
+  <target_dir>/<file_name>
+
+hf download hf://<owner>/<repo>/<path> --local-dir <dir> [# description]
+hf download <owner>/<repo> <file_name> --local-dir <dir> [# description]
+download_hf hf://<owner>/<repo>/<path> <dir> [# description]
+wget -P <dir> https://huggingface.co/<owner>/<repo>/resolve/<branch>/<path>
+```
+
+### How entries are treated
+
+- **Line numbers are preserved.** Delete / Disable / Enable rewrite exactly the parsed line
+  range, in place - the rest of the file (functions, exports, ComfyUI setup) is never
+  touched, comments and indentation stay as they are, and every write is UTF-8 without BOM
+  with LF endings. The file stays a valid bash script after any edit (verified with
+  `bash -n`). Multi-line `download_hf_file` blocks are commented out / uncommented on every
+  line, so a disabled block never leaves a bare continuation line behind.
+- **Descriptions** resolve in this order: an inline `# comment` on the call line, then a
+  standalone `#` comment line immediately above an *active* entry (no blank line between;
+  lines that belong to a commented-out backslash block are ignored), otherwise empty.
+- **Commented-out calls** (e.g. `# civitai download --version 123 ...`) are imported as
+  dimmed `off` rows and can be re-enabled from the UI.
+- **Literal arguments only.** Calls with shell variables or quotes, such as
+  `download_hf_file "$GEMMA_REPO" "$FILE" "$PATH"`, cannot be parsed - they are reported as
+  parse warnings in the UI instead of being silently dropped.
+- **Target dir** is editable per entry; values may not contain spaces, `#`, quotes or `$`
+  (anything else would break the bash line).
+- **Custom helpers with other names** are not recognized. If your script wraps downloads in
+  its own function, either name it like one of the helpers above or keep those lines in a
+  form from the list; unrecognized lines are simply left untouched and untracked.
+
+A minimal importable script looks like this:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+cd /workspace/ComfyUI
+
+civitai download --version 2540896 --out-dir ./models/diffusion_models # main checkpoint
+download_hf_file \
+  Comfy-Org/Wan_2.1_ComfyUI_repackaged \
+  split_files/vae/wan_2.1_vae.safetensors \
+  ./models/vae/wan_2.1_vae.safetensors
+# civitai download --version 2668710 --out-dir ./models/diffusion_models  # imported as "off"
+```
+
 ## Sync with your server over SSH
 
 The classic Vast.ai workflow: your provision script lives in a git repository, and your
