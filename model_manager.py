@@ -65,6 +65,8 @@ RE_HF_DOWNLOAD_B = re.compile(r'^hf\s+download\s+([\w.-]+/[\w.-]+)\s+([^/\s"\'$]
 RE_DOWNLOAD_HF = re.compile(r'^download_hf\s+(?:hf://)?([\w.-]+/[\w.-]+)(?:/([^\s#]+?))?\s+([^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
 RE_WGET = re.compile(r'^wget\s+-P\s+([^\s#]+)\s+(https://huggingface\.co/[^\s#]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
 RE_HF_FILE_ARGS = re.compile(r'^download_hf_file\s+([^\s"\'$]+)\s+([^\s"\'$]+)\s+([^\s"\'$]+)(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_CUSTOM_NODE = re.compile(r'^install_custom_node\s+(https://github\.com/[^\s#]+?)(?:\.git)?(?:\s+([^\s#]+?))?(?:\s*\|\|[^#]*)?(?:\s+#\s*(.+?))?\s*$')
+RE_GH_URL = re.compile(r'github\.com/([\w.-]+)/([\w.-]+?)(?:\.git)?/?$')
 RE_HF_FILE_TRIGGER = re.compile(r'^download_hf_file[\s\\]')
 
 # Standalone-comment guards: reject lines that belong to a commented-out
@@ -322,6 +324,19 @@ def parse_script(path):
                 repo=repo, path=remote_path, filename=file_name))
             continue
 
+        # --- custom node via install_custom_node helper ---
+        m = RE_CUSTOM_NODE.match(work)
+        if m:
+            url = m.group(1).rstrip('/')
+            folder = m.group(2) or url.rsplit('/', 1)[-1]
+            desc = (m.group(3) or '').strip()
+            if not desc and active:
+                desc = adjacent_comment(lines, line_no)
+            models.append(make_entry(
+                line_no, block_end, active, 'github', 'custom-node', 'install_custom_node',
+                {'repo': url}, './custom_nodes', desc, url, name=folder, repo=url))
+            continue
+
         # nothing matched - plain shell line, skipped
     return models, warnings
 
@@ -513,6 +528,10 @@ def set_entry_dir(path, line_start, line_end, new_dir):
     backup_script_once(os.path.basename(path), path)
     lines = split_script_lines(read_script_text(path))
     form = entry['callForm']
+
+    if form == 'install_custom_node':
+        raise ValueError('Custom nodes always install to ./custom_nodes - '
+                         'the target dir cannot be changed.')
 
     if form == 'download_hf_file' and line_end > line_start:
         # destination line is the last line of the block
@@ -763,6 +782,15 @@ def resolve_hf_url(url):
     return {'kind': 'hf', 'repo': repo, 'path': '', 'fileName': '', 'files': files}
 
 
+def resolve_github_url(url):
+    m = RE_GH_URL.search(url)
+    if not m:
+        raise ValueError('Not a GitHub repository URL. Expected https://github.com/<owner>/<repo>.')
+    owner, repo = m.group(1), m.group(2)
+    full = 'https://github.com/{0}/{1}'.format(owner, repo)
+    return {'kind': 'custom-node', 'url': full, 'repoName': repo, 'owner': owner}
+
+
 def resolve_model_url(url, hf_file=''):
     if not url or not url.strip():
         raise ValueError('A model URL is required.')
@@ -774,8 +802,10 @@ def resolve_model_url(url, hf_file=''):
             result['path'] = hf_file.strip()
             result['fileName'] = os.path.basename(result['path'])
         return result
-    raise ValueError('Unrecognized URL. Use a Civitai link (civitai.com, civitai.red, ...) '
-                     'or a HuggingFace link (huggingface.co / hf://).')
+    if re.search(r'github\.com', url):
+        return resolve_github_url(url)
+    raise ValueError('Unrecognized URL. Use a Civitai link (civitai.com, civitai.red, ...), '
+                     'a HuggingFace link (huggingface.co / hf://) or a GitHub repo link (github.com).')
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +899,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .b-new:hover{text-decoration:underline}
   .b-unknown{background:#f3f4f6;color:#6b7280}
   .b-missing{background:#fee2e2;color:#b91c1c}
+  .b-gh{background:#e5e7eb;color:#1f2937}
   .b-dash{color:var(--muted)}
   a{color:var(--accent);text-decoration:none}
   a:hover{text-decoration:underline}
@@ -914,7 +945,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="modal-card">
     <h3>Add model to <span id="addScript"></span></h3>
     <label>Source URL (Civitai or HuggingFace)</label>
-    <input id="addUrl" placeholder="https://civitai.com/models/…  |  https://huggingface.co/…  |  hf://…">
+    <input id="addUrl" placeholder="civitai.com/models/…  |  huggingface.co/…  |  hf://…  |  github.com/…">
     <button class="btn" id="btnResolve">Resolve</button>
     <div class="preview" id="resolveOut"></div>
     <label>Target dir</label>
@@ -997,6 +1028,7 @@ function entryTitle(m){
     if (m.kind === 'civitai-model') return 'civitai model ' + ((m.ids && m.ids.modelId) || '');
     return 'civitai version ' + ((m.ids && m.ids.versionId) || '');
   }
+  if (m.source === 'github') return m.name || m.description || (m.ids && m.ids.repo || 'custom node');
   return m.description || m.filename || (m.repo ? m.repo + (m.path ? '/' + m.path : '') : '');
 }
 
@@ -1043,7 +1075,7 @@ function render(){
     tbody.innerHTML = '<tr><td colspan="6"><div class="empty">No model download calls found in this script.</div></td></tr>';
   } else {
     tbody.innerHTML = sortedModels().map(m => {
-      const src = m.source === 'civitai' ? badge('b-civ','Civitai') : badge('b-hf','HF');
+      const src = m.source === 'civitai' ? badge('b-civ','Civitai') : m.source === 'github' ? badge('b-gh','GitHub') : badge('b-hf','HF');
       const off = m.active ? '' : badge('b-off','off');
       let line1 = esc(entryTitle(m));
       let line2 = '';
@@ -1277,6 +1309,10 @@ $('#btnResolve').addEventListener('click', async () => {
         html += '<div class="pv-line"><span class="pv-label">File</span><br><span class="mono">' + esc(resolveResult.fileName) + '</span>'
           + (resolveResult.sizeKB ? ' · ' + fmtSize(resolveResult.sizeKB) : '') + '</div>';
       }
+    } else if (resolveResult.kind === 'custom-node'){
+      html += '<div class="pv-line"><span class="pv-label">GitHub repo</span><br><span class="mono">' + esc(resolveResult.url) + '</span></div>';
+      html += '<div class="pv-line"><span class="pv-label">Folder</span><br>' + esc(resolveResult.repoName) + '</div>';
+      $('#addDir').value = './custom_nodes';
     } else {
       html += '<div class="pv-line"><span class="pv-label">HF repo</span><br><span class="mono">' + esc(resolveResult.repo) + '</span></div>';
       if (resolveResult.path){
@@ -1309,7 +1345,7 @@ $('#btnInsert').addEventListener('click', async () => {
   const desc = $('#addDesc').value.trim();
   $('#addError').textContent = '';
   if (!resolveResult){ $('#addError').textContent = 'Resolve the URL first.'; return; }
-  if (!dir){ $('#addError').textContent = 'Target dir is required.'; return; }
+  if (resolveResult.kind !== 'custom-node' && !dir){ $('#addError').textContent = 'Target dir is required.'; return; }
   if (resolveResult.kind === 'hf' && !chosenFile){ $('#addError').textContent = 'Pick a file in the repo.'; return; }
   const btn = $('#btnInsert');
   btn.disabled = true;
@@ -1488,7 +1524,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Target dir is required.')
             resolved = resolve_model_url(url, hf_file)
 
-            if resolved['kind'] == 'civitai':
+            if resolved['kind'] == 'custom-node':
+                url = str(resolved['url'])
+                folder = str(resolved['repoName'])
+                suffix = ' # {0}'.format(desc) if desc else ''
+                line = 'install_custom_node {0} {1}{2}'.format(url, folder, suffix)
+                new_lines = [line]
+                entry = {'source': 'github', 'kind': 'custom-node',
+                         'ids': {'repo': url}, 'dir': './custom_nodes',
+                         'description': desc, 'url': url, 'name': folder}
+            elif resolved['kind'] == 'civitai':
                 form = dominant_civitai_form(path_full)
                 vid = str(resolved['versionId'])
                 # Every inserted call is wrapped so a failed download never
