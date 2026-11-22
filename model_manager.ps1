@@ -627,14 +627,28 @@ function Get-CivitaiHeaders {
 
 function Invoke-CivitaiApi {
     param([string]$Uri)
-    return Invoke-RestMethod -Uri $Uri -Headers (Get-CivitaiHeaders) -TimeoutSec 30 -UseBasicParsing
+    # Transient failures (429 rate limit, 5xx, connection resets) are retried
+    # with backoff; 404 is not retried - the resource is really gone.
+    $attempts = 3
+    for ($i = 1; $i -le $attempts; $i++) {
+        try {
+            return Invoke-RestMethod -Uri $Uri -Headers (Get-CivitaiHeaders) -TimeoutSec 30 -UseBasicParsing
+        }
+        catch {
+            $code = 0
+            try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch {}
+            if ($code -eq 404) { throw }
+            if ($i -ge $attempts) { throw }
+            Start-Sleep -Milliseconds (600 * $i)
+        }
+    }
 }
 
 function Update-CivitaiInfo {
     param([System.Collections.Generic.List[object]]$Models, [string]$ScriptName)
 
     $headers = Get-CivitaiHeaders
-    $stats = @{ latest = 0; new = 0; unknown = 0; model = 0 }
+    $stats = @{ latest = 0; new = 0; unknown = 0; missing = 0; model = 0 }
     foreach ($m in $Models) {
         if ($m['source'] -ne 'civitai') { continue }
         if (-not $m['active']) { continue }
@@ -688,9 +702,18 @@ function Update-CivitaiInfo {
             }
         }
         catch {
-            $m['versionStatus'] = 'unknown'
-            $stats.unknown++
-            Add-Log "Civitai check failed for line $($m['lineStart']) in ${ScriptName}: $($_.Exception.Message)"
+            $code = 0
+            try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch {}
+            if ($code -eq 404) {
+                $m['versionStatus'] = 'missing'
+                $stats.missing++
+                Add-Log "Version on line $($m['lineStart']) in ${ScriptName} is gone from Civitai (404)."
+            }
+            else {
+                $m['versionStatus'] = 'unknown'
+                $stats.unknown++
+                Add-Log "Civitai check failed for line $($m['lineStart']) in ${ScriptName}: $($_.Exception.Message)"
+            }
         }
 
         $idPart = [string]$m['ids']['versionId'] + [string]$m['ids']['modelId']
@@ -701,7 +724,7 @@ function Update-CivitaiInfo {
         }
         $script:civitaiCache[$cacheKey] = $cached
     }
-    Add-Log ("Version check for {0}: {1} latest, {2} new, {3} unknown, {4} model info" -f $ScriptName, $stats.latest, $stats.new, $stats.unknown, $stats.model)
+    Add-Log ("Version check for {0}: {1} latest, {2} new, {3} unknown, {4} missing, {5} model info" -f $ScriptName, $stats.latest, $stats.new, $stats.unknown, $stats.missing, $stats.model)
 }
 
 function Merge-CivitaiCache {
@@ -851,6 +874,7 @@ $script:htmlTemplate = @'
   .b-new{background:#ffedd5;color:#c2410c;cursor:pointer;text-decoration:none}
   .b-new:hover{text-decoration:underline}
   .b-unknown{background:#f3f4f6;color:#6b7280}
+  .b-missing{background:#fee2e2;color:#b91c1c}
   .b-dash{color:var(--muted)}
   a{color:var(--accent);text-decoration:none}
   a:hover{text-decoration:underline}
@@ -999,6 +1023,7 @@ function versionCell(m){
   switch (m.versionStatus){
     case 'latest': return badge('b-latest', 'latest');
     case 'new':    return badge('b-new', 'new: ' + (m.newVersion && m.newVersion.name || ''), m.newVersion && m.newVersion.url);
+    case 'missing':return badge('b-missing', 'missing');
     case 'unknown':return badge('b-unknown', 'unknown');
     default:       return '<span class="b-dash">—</span>';
   }
