@@ -672,7 +672,7 @@ function Merge-CivitaiCache {
 # ---------------------------------------------------------------------------
 function Resolve-CivitaiUrl {
     param([string]$Url)
-    $m = [regex]::Match($Url, 'civitai\.com/models/(\d+)(?:[/?].*?modelVersionId=(\d+))?')
+    $m = [regex]::Match($Url, 'civitai\.[a-z]{2,}/models/(\d+)(?:/[^\s?/]*)?(?:[/?].*?modelVersionId=(\d+))?')
     if (-not $m.Success) {
         throw 'Not a Civitai model URL. Expected https://civitai.com/models/<id> or ...?modelVersionId=<id>.'
     }
@@ -745,7 +745,7 @@ function Resolve-HfUrl {
 function Resolve-ModelUrl {
     param([string]$Url, [string]$HfFile)
     if ([string]::IsNullOrWhiteSpace($Url)) { throw 'A model URL is required.' }
-    if ($Url -match 'civitai\.com') { return Resolve-CivitaiUrl -Url $Url }
+    if ($Url -match 'civitai\.[a-z]{2,}') { return Resolve-CivitaiUrl -Url $Url }
     if ($Url -match 'huggingface\.co|^hf://') {
         $r = Resolve-HfUrl -Url $Url
         if (-not $r.path -and -not [string]::IsNullOrWhiteSpace($HfFile)) {
@@ -754,7 +754,7 @@ function Resolve-ModelUrl {
         }
         return $r
     }
-    throw 'Unrecognized URL. Use a civitai.com or huggingface.co (or hf://) link.'
+    throw 'Unrecognized URL. Use a Civitai link (civitai.com, civitai.red, ...) or a HuggingFace link (huggingface.co / hf://).'
 }
 
 # ---------------------------------------------------------------------------
